@@ -237,6 +237,7 @@ function taskRow(t, { done = false } = {}) {
   li.append(actions);
 
   if (!done) {
+    setupTouchDrag(li, t);
     li.addEventListener('dragstart', (e) => {
       dragId = t.id;
       e.dataTransfer.effectAllowed = 'move';
@@ -299,6 +300,154 @@ function setupDrop(section, catId) {
   });
 }
 
+// ---------- Déplacer au doigt : appui long, on glisse, on lâche ----------
+
+const LONG_PRESS_MS = 350;
+const MOVE_TOLERANCE = 10; // px : au-delà, c'est un défilement, pas un appui long
+const EDGE = 90;           // px : zone en haut/bas de l'écran qui fait défiler pendant le glisser
+let touchDrag = null;
+let suppressClickUntil = 0;
+
+function setupTouchDrag(li, t) {
+  li.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || e.target.closest('button, input')) return;
+    const p = e.touches[0];
+    cancelTouchDrag();
+    touchDrag = {
+      id: t.id, li, active: false,
+      startX: p.clientX, startY: p.clientY, x: p.clientX, y: p.clientY,
+    };
+    li.classList.add('pressing');
+    touchDrag.timer = setTimeout(beginTouchDrag, LONG_PRESS_MS);
+  }, { passive: true });
+
+  li.addEventListener('touchmove', (e) => {
+    if (!touchDrag || touchDrag.li !== li) return;
+    const p = e.touches[0];
+    touchDrag.x = p.clientX;
+    touchDrag.y = p.clientY;
+    if (!touchDrag.active) {
+      if (Math.hypot(p.clientX - touchDrag.startX, p.clientY - touchDrag.startY) > MOVE_TOLERANCE) cancelTouchDrag();
+      return;
+    }
+    if (e.cancelable) e.preventDefault(); // bloque le défilement pendant qu'on glisse
+    moveGhost();
+    updateTouchTarget();
+  }, { passive: false });
+
+  li.addEventListener('touchend', (e) => {
+    if (!touchDrag || touchDrag.li !== li) return;
+    if (touchDrag.active) {
+      e.preventDefault();
+      dropTouchDrag();
+    } else {
+      cancelTouchDrag();
+    }
+  }, { passive: false });
+
+  li.addEventListener('touchcancel', cancelTouchDrag);
+  // Empêche le menu « copier / partager » de l'appui long.
+  li.addEventListener('contextmenu', (e) => { if (touchDrag || IS_TOUCH) e.preventDefault(); });
+}
+
+function beginTouchDrag() {
+  const d = touchDrag;
+  if (!d) return;
+  d.active = true;
+  if (navigator.vibrate) navigator.vibrate(25);
+  const r = d.li.getBoundingClientRect();
+  d.offsetY = d.y - r.top;
+  d.ghost = d.li.cloneNode(true);
+  d.ghost.classList.remove('pressing');
+  d.ghost.classList.add('ghost');
+  d.ghost.style.width = r.width + 'px';
+  d.ghost.style.left = r.left + 'px';
+  document.body.append(d.ghost);
+  d.li.classList.remove('pressing');
+  d.li.classList.add('dragging');
+  document.body.classList.add('touch-dragging');
+  moveGhost();
+  updateTouchTarget();
+  autoScroll();
+}
+
+function moveGhost() {
+  const d = touchDrag;
+  if (d && d.ghost) d.ghost.style.top = (d.y - d.offsetY) + 'px';
+}
+
+function clearDropMarks() {
+  document.querySelectorAll('.drop-before, .drop-target').forEach((n) => n.classList.remove('drop-before', 'drop-target'));
+}
+
+function updateTouchTarget() {
+  const d = touchDrag;
+  if (!d || !d.active) return;
+  const under = document.elementFromPoint(d.x, d.y);
+  const section = under && under.closest('.cat');
+  clearDropMarks();
+  d.targetCat = null;
+  d.beforeId = null;
+  if (!section) return;
+  section.classList.add('drop-target');
+  d.targetCat = section.dataset.cat;
+  const row = rowUnder(section, d.y);
+  if (row) {
+    row.classList.add('drop-before');
+    d.beforeId = row.dataset.id;
+  }
+}
+
+// Fait défiler la page quand le doigt approche du haut ou du bas de l'écran.
+function autoScroll() {
+  const d = touchDrag;
+  if (!d || !d.active) return;
+  let dy = 0;
+  if (d.y < EDGE) dy = -Math.ceil((EDGE - d.y) / 6);
+  else if (d.y > window.innerHeight - EDGE) dy = Math.ceil((d.y - (window.innerHeight - EDGE)) / 6);
+  if (dy) {
+    window.scrollBy(0, dy);
+    updateTouchTarget();
+  }
+  d.raf = requestAnimationFrame(autoScroll);
+}
+
+function dropTouchDrag() {
+  const d = touchDrag;
+  const { id, targetCat, beforeId } = d;
+  cancelTouchDrag();
+  suppressClickUntil = Date.now() + 500;
+  if (!targetCat) return;
+  const t = findTask(id);
+  const moved = t && t.cat !== targetCat;
+  const before = snapshot();
+  moveTask(id, targetCat, beforeId);
+  if (moved) {
+    const c = CATS.find((x) => x.id === targetCat);
+    showToast(`Déplacée dans « ${c.label} »`, before);
+  }
+}
+
+function cancelTouchDrag() {
+  const d = touchDrag;
+  if (!d) return;
+  clearTimeout(d.timer);
+  cancelAnimationFrame(d.raf);
+  if (d.ghost) d.ghost.remove();
+  d.li.classList.remove('pressing', 'dragging');
+  document.body.classList.remove('touch-dragging');
+  clearDropMarks();
+  touchDrag = null;
+}
+
+// Après un glisser, on ignore le « clic » que le navigateur envoie en lâchant.
+document.addEventListener('click', (e) => {
+  if (Date.now() < suppressClickUntil) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+}, true);
+
 // La ligne devant laquelle on dépose : la première dont le milieu est sous le curseur.
 function rowUnder(section, y) {
   for (const row of section.querySelectorAll('.task:not(.dragging)')) {
@@ -315,7 +464,7 @@ function render() {
 
   for (const c of CATS) {
     const tasks = open.filter((t) => t.cat === c.id);
-    const section = el('section', { class: `cat cat-${c.id}`, 'aria-labelledby': `h-${c.id}` });
+    const section = el('section', { class: `cat cat-${c.id}`, 'data-cat': c.id, 'aria-labelledby': `h-${c.id}` });
     const h2 = el('h2', { id: `h-${c.id}` });
     if (c.id === 'immediate') h2.insertAdjacentHTML('beforeend', ICONS.bolt);
     h2.append(c.label);
