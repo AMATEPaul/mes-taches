@@ -336,12 +336,39 @@ kbd {
   .icon-btn { width: 38px; height: 38px; }
   .task:hover { background: transparent; }
   .title { cursor: text; }
-  .shortcuts { display: none; }
+  .shortcuts.keys { display: none; }
+  .shortcuts.touch-hint { display: block; }
   .add input, .edit { font-size: 16px; } /* évite le zoom automatique sur iPhone */
   .pick { padding: 10px 6px; }
 }
 
 body { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+.touch-hint { display: none; }
+
+/* Glisser au doigt */
+.task { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.task .edit { -webkit-user-select: text; user-select: text; }
+.task.pressing { background: var(--surface-2); transform: scale(.985); transition: transform .3s; }
+.ghost {
+  position: fixed;
+  z-index: 50;
+  margin: 0;
+  list-style: none;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--c);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .28);
+  transform: scale(1.03) rotate(-1deg);
+}
+.ghost .actions { display: none; }
+body.touch-dragging { -webkit-user-select: none; user-select: none; overflow-anchor: none; }
+body.touch-dragging .cat { transition: box-shadow .12s, background-color .12s; }
+.cat.drop-target {
+  box-shadow: 0 0 0 3px var(--c), var(--shadow);
+  background: color-mix(in srgb, var(--c) 10%, var(--surface));
+}
 .app {
   padding-left: max(16px, env(safe-area-inset-left));
   padding-right: max(16px, env(safe-area-inset-right));
