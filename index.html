@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:">
+  <title>Mes Tâches</title>
+  <meta name="description" content="Mes tâches classées par priorité : Immédiate, Prioritaire, Important, Ça va.">
+  <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Mes Tâches">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <div>
+        <h1>Mes tâches</h1>
+        <p class="date" id="today"></p>
+      </div>
+      <p class="remaining" id="remaining" aria-live="polite"></p>
+    </header>
+
+    <form class="add" id="addForm" autocomplete="off">
+      <label class="sr-only" for="newTask">Nouvelle tâche</label>
+      <div class="add-row">
+        <input id="newTask" type="text" placeholder="Ajouter une tâche…" maxlength="200">
+        <button type="submit" class="add-btn">Ajouter</button>
+      </div>
+      <div class="picker" role="radiogroup" aria-label="Priorité" id="picker"></div>
+    </form>
+
+    <div id="board" class="board"></div>
+
+    <section class="done-zone" id="doneZone">
+      <div class="done-head">
+        <button type="button" class="done-toggle" id="doneToggle" aria-expanded="false">
+          <svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span id="doneLabel">Terminées</span>
+        </button>
+        <button type="button" class="link-btn" id="clearDone">Tout effacer</button>
+      </div>
+      <ul class="list done-list" id="doneList" hidden></ul>
+    </section>
+
+    <p class="shortcuts">Raccourcis : <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>4</kbd> pour choisir la priorité, <kbd>Ctrl</kbd>+<kbd>N</kbd> pour écrire une tâche, double-clic pour modifier.</p>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>
+    <span id="toastText"></span>
+    <button type="button" id="toastUndo">Annuler</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
