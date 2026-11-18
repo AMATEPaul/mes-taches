@@ -10,7 +10,15 @@ Chaque tâche est rangée dans une des 4 catégories, de la plus urgente à la m
 | **Important** | Cette semaine |
 | **Ça va** | Quand j'ai le temps |
 
-## Sur téléphone (Android et iPhone)
+## Sur Android : l'appli (APK)
+
+Télécharge **[MesTaches.apk](https://github.com/AMATEPaul/mes-taches/releases/latest/download/MesTaches.apk)** sur ton téléphone et ouvre-le.
+Android demande d'autoriser l'installation depuis ton navigateur (« Sources inconnues ») : accepte pour cette fois.
+L'appli se met à jour toute seule (elle charge la dernière version du site), et marche sans connexion après le premier lancement.
+
+Tu avais déjà des tâches dans la version Chrome ? Dans Chrome : **Sauvegarder / restaurer mes tâches → Copier mes tâches**, puis dans l'APK : **Sauvegarder / restaurer → colle → Restaurer**.
+
+## Sur téléphone, sans installer d'APK (Android et iPhone)
 
 Ouvre **https://amatepaul.github.io/mes-taches/** sur ton téléphone, puis :
 
@@ -40,6 +48,8 @@ npm install
 npm start        # lance la version PC
 npm run dist     # fabrique l'installeur Windows dans dist/
 ```
+
+L'APK Android est fait avec [Capacitor](https://capacitorjs.com) 8 (dossier `android/`, configuration `capacitor.config.json`) : il affiche le site publié sur GitHub Pages, avec `src/offline.html` si le tout premier lancement se fait sans internet. Fabrication : `npx cap sync android` puis `android/gradlew assembleRelease` avec la clé de signature (gardée hors du dépôt).
 
 Le glisser-déposer utilise [SortableJS](https://github.com/SortableJS/Sortable) 1.15.7 (licence MIT), copié dans `src/vendor/` pour marcher hors connexion.
 

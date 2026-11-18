@@ -51,9 +51,26 @@
       <ul class="list done-list" id="doneList" hidden></ul>
     </section>
 
+    <div class="backup-row">
+      <button type="button" class="link-btn" id="backupOpen">Sauvegarder / restaurer mes tâches</button>
+    </div>
+
     <p class="shortcuts touch-hint">Astuce : appuie longtemps sur une tâche pour la déplacer dans une autre catégorie.</p>
     <p class="shortcuts keys">Raccourcis : <kbd>Ctrl</kbd>+<kbd>1</kbd>…<kbd>4</kbd> pour choisir la priorité, <kbd>Ctrl</kbd>+<kbd>N</kbd> pour écrire une tâche, double-clic pour modifier.</p>
   </main>
+
+  <dialog class="sheet" id="backupDialog" aria-labelledby="backupTitle">
+    <h2 id="backupTitle">Sauvegarde</h2>
+    <p class="sheet-text">Pour garder tes tâches de côté ou les passer dans une autre appli : copie-les ici, puis colle-les dans « Restaurer » de l’autre appli.</p>
+    <button type="button" class="primary-btn" id="backupCopy">Copier mes tâches</button>
+    <label class="sheet-label" for="backupText">Restaurer : colle une sauvegarde ici</label>
+    <textarea id="backupText" rows="4" placeholder="Colle ici le texte copié…" spellcheck="false" autocomplete="off"></textarea>
+    <p class="sheet-msg" id="backupMsg" role="status" aria-live="polite"></p>
+    <div class="sheet-actions">
+      <button type="button" class="ghost-btn" id="backupClose">Fermer</button>
+      <button type="button" class="primary-btn" id="backupRestore">Restaurer</button>
+    </div>
+  </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden>
     <span id="toastText"></span>

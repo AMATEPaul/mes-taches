@@ -487,6 +487,84 @@ function undo() {
   commit();
 }
 
+// ---------- Sauvegarde / restauration ----------
+// Un simple texte à copier-coller : marche partout (navigateur, appli installée, APK).
+
+const BACKUP_PREFIX = 'MesTaches1:';
+
+function backupText() {
+  return BACKUP_PREFIX + JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), tasks: state.tasks });
+}
+
+function parseBackup(text) {
+  text = (text || '').trim();
+  if (text.startsWith(BACKUP_PREFIX)) text = text.slice(BACKUP_PREFIX.length);
+  let data;
+  try { data = JSON.parse(text); } catch { return null; }
+  if (Array.isArray(data)) data = { tasks: data };
+  if (!data || !Array.isArray(data.tasks)) return null;
+  return normalize({ version: 1, tasks: data.tasks }).tasks;
+}
+
+function setBackupMsg(text, isError = false) {
+  const m = $('#backupMsg');
+  m.textContent = text;
+  m.classList.toggle('error', isError);
+}
+
+async function copyBackup() {
+  const text = backupText();
+  const n = state.tasks.length;
+  const done = `Copié (${n} tâche${n > 1 ? 's' : ''}). Ouvre l’autre appli, puis Sauvegarde → colle → Restaurer.`;
+  try {
+    await navigator.clipboard.writeText(text);
+    setBackupMsg(done);
+    return;
+  } catch {}
+  // Plan B : on met le texte dans la zone et on tente la copie « à l'ancienne ».
+  const area = $('#backupText');
+  area.value = text;
+  area.focus();
+  area.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch {}
+  setBackupMsg(ok ? done : 'Le texte est sélectionné ci-dessus : appuie longuement dessus puis « Copier ».');
+}
+
+function restoreBackup() {
+  const incoming = parseBackup($('#backupText').value);
+  if (!incoming) {
+    setBackupMsg('Ce texte n’est pas une sauvegarde de Mes Tâches. Vérifie que tu as tout collé.', true);
+    return;
+  }
+  // On ajoute ce qui manque, sans rien effacer ni remplacer.
+  const known = new Set(state.tasks.map((t) => t.id));
+  const added = incoming.filter((t) => !known.has(t.id));
+  if (!added.length) {
+    setBackupMsg('Toutes ces tâches sont déjà là : rien à ajouter.');
+    return;
+  }
+  const before = snapshot();
+  state.tasks = state.tasks.concat(added);
+  $('#backupText').value = '';
+  setBackupMsg('');
+  $('#backupDialog').close();
+  commit({ toast: added.length === 1 ? '1 tâche restaurée' : `${added.length} tâches restaurées`, before });
+}
+
+function setupBackup() {
+  const dlg = $('#backupDialog');
+  $('#backupOpen').addEventListener('click', () => {
+    setBackupMsg('');
+    if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
+  });
+  $('#backupClose').addEventListener('click', () => dlg.close());
+  $('#backupCopy').addEventListener('click', copyBackup);
+  $('#backupRestore').addEventListener('click', restoreBackup);
+  // Appui en dehors de la fenêtre : on la ferme.
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+}
+
 // ---------- Démarrage ----------
 
 function normalize(data) {
@@ -521,6 +599,7 @@ async function init() {
   $('#doneToggle').addEventListener('click', () => { showDone = !showDone; render(); });
   $('#clearDone').addEventListener('click', clearDone);
   $('#toastUndo').addEventListener('click', undo);
+  setupBackup();
 
   // Doigt, stylet ou souris : retenu à chaque geste (utile pour les tablettes avec clavier/souris).
   document.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType || 'mouse'; }, true);

@@ -1,0 +1,21 @@
+{
+  "appId": "com.mestaches.app",
+  "appName": "Mes Tâches",
+  "webDir": "src",
+  "server": {
+    "url": "https://amatepaul.github.io/mes-taches/",
+    "errorPath": "offline.html",
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#f7f6f3",
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

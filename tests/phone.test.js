@@ -1,6 +1,6 @@
 ﻿// Batterie de tests "format téléphone" pour Mes Tâches.
 // Lance : electron.exe suite.js [--dark]   (SRC_DIR pour tester un autre dossier)
-const { app, BrowserWindow, nativeTheme } = require('electron');
+const { app, BrowserWindow, nativeTheme, clipboard } = require('electron');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
@@ -341,7 +341,35 @@ app.whenReady().then(async () => {
     await load();
     check('Hors connexion : l’appli s’ouvre quand même', (await js(`document.querySelectorAll('#board .task').length`)) === 15);
     await shot('09-hors-connexion');
-  } catch (e) {
+    // ---------- 10. Sauvegarde / restauration (copier-coller) ----------
+    {
+      const avant = await state();
+      await clipboard.writeText('');
+      await tap('#backupOpen');
+      check('Sauvegarde : la fenêtre s’ouvre', await js(`document.querySelector('#backupDialog').open`));
+      await tap('#backupCopy'); await wait(300);
+      let copie = await clipboard.readText();
+      if (!copie) copie = await js(`document.querySelector('#backupText').value`); // plan B (zone de texte)
+      check('Sauvegarde : le texte copié commence par MesTaches1:', copie.startsWith('MesTaches1:'), (await js(`document.querySelector('#backupMsg').textContent`)));
+      await tap('#backupClose');
+      check('Sauvegarde : la fenêtre se ferme', !(await js(`document.querySelector('#backupDialog').open`)));
+
+      // Téléphone « neuf » (comme l'APK au premier lancement)
+      await js(`localStorage.clear()`); await load();
+      check('Appli vide avant restauration', (await js(`document.querySelectorAll('#board .task').length`)) === 0);
+      await tap('#backupOpen');
+      await tap('#backupText'); await typeText('ceci nest pas une sauvegarde'); await tap('#backupRestore');
+      check('Texte invalide : message d’erreur, rien n’est ajouté', (await js(`document.querySelector('#backupMsg').classList.contains('error')`)) && (await state()).length === 0);
+      await js(`document.querySelector('#backupText').value = ''`);
+      await tap('#backupText'); await typeText(copie); await tap('#backupRestore'); await wait(300);
+      const apres = await state();
+      check('Restauration : toutes les tâches reviennent', apres.length === avant.length && avant.every((t) => apres.some((u) => u.id === t.id && u.cat === t.cat && u.title === t.title && !!u.done === !!t.done)), `${avant.length} → ${apres.length}`);
+      check('Restauration : la fenêtre se ferme et un message s’affiche', !(await js(`document.querySelector('#backupDialog').open`)) && (await js(`document.querySelector('#toastText').textContent`)).includes('restaurée'));
+      await tap('#backupOpen'); await tap('#backupText'); await typeText(copie); await tap('#backupRestore');
+      check('Restaurer deux fois n’ajoute pas de doublons', (await state()).length === avant.length && (await js(`document.querySelector('#backupMsg').textContent`)).includes('déjà'));
+      await shot('10-sauvegarde');
+      await tap('#backupClose');
+    }  } catch (e) {
     fail++;
     log('CRASH', e.stack);
   }
@@ -351,6 +379,9 @@ app.whenReady().then(async () => {
   try { server.close(); } catch {}
   app.exit(0);
 });
+
+
+
 
 
 

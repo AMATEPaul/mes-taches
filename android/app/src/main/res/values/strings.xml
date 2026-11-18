@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mes Tâches</string>
+    <string name="title_activity_main">Mes Tâches</string>
+    <string name="package_name">com.mestaches.app</string>
+    <string name="custom_url_scheme">com.mestaches.app</string>
+</resources>
