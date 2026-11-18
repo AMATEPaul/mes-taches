@@ -27,6 +27,8 @@
       <p class="remaining" id="remaining" aria-live="polite"></p>
     </header>
 
+    <p class="banner" id="banner" role="alert" hidden></p>
+
     <form class="add" id="addForm" autocomplete="off">
       <label class="sr-only" for="newTask">Nouvelle tâche</label>
       <div class="add-row">
@@ -58,6 +60,7 @@
     <button type="button" id="toastUndo">Annuler</button>
   </div>
 
+  <script src="vendor/Sortable.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -30,7 +30,7 @@ Windows peut afficher « Windows a protégé votre ordinateur » : clique sur **
 - Écris une tâche, choisis sa catégorie, puis **Ajouter** (ou Entrée).
 - **Rond** : marquer comme terminée. **▲ / ▼** : changer de catégorie. **Corbeille** : supprimer.
 - Modifier le texte : appui sur la tâche (téléphone) ou double-clic (PC).
-- Sur PC, on peut aussi glisser une tâche d'une catégorie à l'autre.
+- **Déplacer une tâche** : sur téléphone, appui long dessus puis glisse-la vers une catégorie (la catégorie survolée s'allume, les autres tâches s'écartent pour lui faire de la place). Sur PC, glisse-la à la souris.
 - Raccourcis PC : `Ctrl+1` … `Ctrl+4` pour la priorité, `Ctrl+N` pour écrire une tâche.
 
 ## Pour les développeurs
@@ -40,5 +40,7 @@ npm install
 npm start        # lance la version PC
 npm run dist     # fabrique l'installeur Windows dans dist/
 ```
+
+Le glisser-déposer utilise [SortableJS](https://github.com/SortableJS/Sortable) 1.15.7 (licence MIT), copié dans `src/vendor/` pour marcher hors connexion.
 
 Le dossier `src/` contient toute l'appli (HTML, CSS, JS). Il sert à la fois à la version PC (Electron) et à la version web publiée sur GitHub Pages (branche `gh-pages`).

@@ -17,20 +17,55 @@ const ICONS = {
   bolt: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1.5L3.5 9H8l-1 5.5L12.5 7H8z" fill="currentColor"/></svg>',
 };
 
-// Stockage : fichier sur le disque dans l'appli, localStorage si ouvert dans un navigateur.
+// Stockage : fichier sur le disque dans l'appli PC, localStorage dans le navigateur.
+// Si les données sont illisibles, on en garde une copie au lieu de les écraser.
 const storage = window.store || {
-  load: async () => { try { return JSON.parse(localStorage.getItem('taches')); } catch { return null; } },
-  save: async (d) => { try { localStorage.setItem('taches', JSON.stringify(d)); } catch {} },
+  load: async () => {
+    let raw = null;
+    try { raw = localStorage.getItem('taches'); } catch { return null; }
+    if (raw == null) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      try { localStorage.setItem('taches-illisible-' + Date.now(), raw); } catch {}
+      return null;
+    }
+  },
+  save: async (d) => { try { localStorage.setItem('taches', JSON.stringify(d)); return true; } catch { return false; } },
 };
+
+// Bandeau d'alerte permanent (problème de lecture ou d'enregistrement).
+const banners = new Map();
+function showBanner(key, text) {
+  banners.set(key, text);
+  const b = document.getElementById('banner');
+  b.textContent = [...banners.values()].join(' ');
+  b.hidden = false;
+}
+function hideBanner(key) {
+  if (!banners.delete(key)) return;
+  const b = document.getElementById('banner');
+  b.textContent = [...banners.values()].join(' ');
+  b.hidden = banners.size === 0;
+}
 
 let state = { version: 1, tasks: [] };
 let selectedCat = 'prioritaire';
 let showDone = false;
 let undoSnapshot = null;
 let toastTimer = null;
-let dragId = null;
+let sortables = [];
+let isDragging = false;
+let holding = false; // tâche prise par l'appui long (avant même le premier mouvement)
+let pendingRender = false; // un redessin demandé pendant un glisser, fait juste après
+let dragBefore = null;
+let rendering = false;
+let suppressClickUntil = 0;
+let lastPointerType = 'mouse';
+let loadFailed = false;
 
-// Écran tactile sans souris (téléphone, tablette).
+// Écran tactile sans souris (téléphone, tablette) : sert seulement à ne pas ouvrir le clavier au démarrage
+// et à afficher l'astuce. Le choix « appui = modifier » se fait geste par geste (voir lastPointerType).
 const IS_TOUCH = window.matchMedia('(hover: none)').matches;
 
 const $ = (sel) => document.querySelector(sel);
@@ -50,12 +85,27 @@ function uid() {
   return (crypto.randomUUID && crypto.randomUUID()) || String(Date.now()) + Math.random().toString(16).slice(2);
 }
 
-function save() {
-  storage.save(state);
-}
-
 function snapshot() {
   return JSON.parse(JSON.stringify(state.tasks));
+}
+
+// Enregistre, redessine, et gère le message « Annuler ».
+// Toute modification sans message ferme l'ancien message : « Annuler » ne peut donc jamais
+// effacer une modification faite après coup.
+function saveState() {
+  // Si la lecture au démarrage a échoué, on n'écrase surtout pas le fichier existant.
+  if (loadFailed) return;
+  Promise.resolve()
+    .then(() => storage.save(state))
+    .then((ok) => { if (ok === false) throw new Error('save'); hideBanner('save'); })
+    .catch(() => showBanner('save', 'Impossible d’enregistrer tes tâches pour l’instant. Garde l’appli ouverte et réessaie dans un moment.'));
+}
+
+function commit({ toast = null, before = null } = {}) {
+  saveState();
+  render();
+  if (toast) showToast(toast, before);
+  else hideToast();
 }
 
 // ---------- Actions ----------
@@ -64,8 +114,7 @@ function addTask(title, cat) {
   title = title.trim();
   if (!title) return false;
   state.tasks.push({ id: uid(), title, cat, done: false, createdAt: Date.now(), doneAt: null });
-  save();
-  render();
+  commit();
   return true;
 }
 
@@ -79,9 +128,7 @@ function completeTask(id) {
   const before = snapshot();
   t.done = true;
   t.doneAt = Date.now();
-  save();
-  render();
-  showToast('Bravo, tâche terminée !', before);
+  commit({ toast: 'Bravo, tâche terminée !', before });
 }
 
 function restoreTask(id) {
@@ -92,16 +139,13 @@ function restoreTask(id) {
   // On la remet en bas de sa catégorie.
   state.tasks = state.tasks.filter((x) => x.id !== id);
   state.tasks.push(t);
-  save();
-  render();
+  commit();
 }
 
 function deleteTask(id) {
   const before = snapshot();
   state.tasks = state.tasks.filter((t) => t.id !== id);
-  save();
-  render();
-  showToast('Tâche supprimée', before);
+  commit({ toast: 'Tâche supprimée', before });
 }
 
 function clearDone() {
@@ -109,9 +153,7 @@ function clearDone() {
   if (!n) return;
   const before = snapshot();
   state.tasks = state.tasks.filter((t) => !t.done);
-  save();
-  render();
-  showToast(n === 1 ? '1 tâche effacée' : `${n} tâches effacées`, before);
+  commit({ toast: n === 1 ? '1 tâche effacée' : `${n} tâches effacées`, before });
 }
 
 function shiftCat(id, delta) {
@@ -123,31 +165,129 @@ function shiftCat(id, delta) {
   // Elle arrive en bas de la nouvelle catégorie.
   state.tasks = state.tasks.filter((x) => x.id !== id);
   state.tasks.push(t);
-  save();
-  render();
+  commit();
   focusTask(id);
 }
 
-function renameTask(id, title) {
-  const t = findTask(id);
-  title = title.trim();
-  if (t && title && title !== t.title) {
-    t.title = title;
-    save();
-  }
-  render();
+// ---------- Glisser-déposer (SortableJS) ----------
+// Téléphone : appui long (350 ms) puis on glisse. Souris : on glisse directement.
+// forceFallback : SortableJS dessine lui-même la tâche qui suit le doigt et n'utilise jamais
+// le glisser natif du navigateur (celui qui faisait lâcher la tâche au bout d'une seconde).
+
+function setupSortable(ul) {
+  return Sortable.create(ul, {
+    group: 'taches',
+    draggable: '.task',
+    filter: 'button, input, .empty, .cat-head',
+    preventOnFilter: false,         // les boutons restent cliquables
+    delay: 350,
+    delayOnTouchOnly: true,         // appui long au doigt seulement
+    touchStartThreshold: 5,         // le doigt bouge de plus de 5 px pendant l'appui = on défile
+    forceFallback: true,
+    fallbackTolerance: 3,
+    fallbackOnBody: true,
+    animation: 180,                 // les autres tâches glissent pour faire de la place
+    easing: 'cubic-bezier(0.2, 0, 0, 1)',
+    ghostClass: 'drag-placeholder', // l'emplacement où la tâche va se poser
+    chosenClass: 'drag-chosen',
+    dragClass: 'drag-floating',
+    fallbackClass: 'drag-fallback', // la copie qui suit le doigt
+    scroll: true,
+    forceAutoScrollFallback: true,
+    scrollSensitivity: 80,
+    scrollSpeed: 14,
+    bubbleScroll: true,
+    emptyInsertThreshold: 24,
+    revertOnSpill: true,            // lâchée en dehors des catégories : elle revient à sa place
+    // Dès que l'appui long a « pris » la tâche, on empêche la page de défiler sous le doigt
+    // (voir le blocage de touchmove dans init()).
+    onChoose: () => {
+      holding = true;
+      document.body.classList.add('is-holding'); // coupe le zoom à deux doigts pendant qu'on tient la tâche
+    },
+    onUnchoose: () => {
+      // Appui long relâché sans bouger : on n'ouvre pas la modification derrière.
+      if (holding && lastPointerType !== 'mouse') suppressClickUntil = Date.now() + 400;
+      holding = false;
+      document.body.classList.remove('is-holding');
+      if (!isDragging) flushRender();
+    },
+    onStart: (evt) => {
+      isDragging = true;
+      dragBefore = snapshot();
+      document.body.classList.add('is-dragging');
+      highlight(evt.from);
+    },
+    onMove: (evt) => {
+      highlight(evt.to);
+    },
+    onEnd: (evt) => {
+      isDragging = false;
+      holding = false;
+      document.body.classList.remove('is-dragging', 'is-holding');
+      highlight(null);
+      suppressClickUntil = Date.now() + 400;
+      const before = dragBefore;
+      dragBefore = null;
+      const type = evt.originalEvent && evt.originalEvent.type;
+      // Sur iPhone / écrans tactiles Windows, SortableJS attend un « clic » qui ne vient jamais après
+      // un glisser au doigt, et avalerait le prochain appui. On lui donne ce clic tout de suite.
+      if (lastPointerType !== 'mouse') {
+        document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+      // Geste interrompu par le système (notification, appel…) : on annule, rien ne bouge.
+      if (type === 'pointercancel' || type === 'touchcancel') {
+        setTimeout(() => { pendingRender = false; render(); }, 0);
+        return;
+      }
+      // On laisse SortableJS finir son rangement avant de redessiner.
+      setTimeout(() => { pendingRender = false; applyDomOrder(evt, before); }, 0);
+    },
+  });
 }
 
-function moveTask(id, cat, beforeId) {
-  const t = findTask(id);
-  if (!t || id === beforeId) return;
-  t.cat = cat;
-  state.tasks = state.tasks.filter((x) => x.id !== id);
-  const idx = beforeId ? state.tasks.findIndex((x) => x.id === beforeId) : -1;
-  if (idx === -1) state.tasks.push(t);
-  else state.tasks.splice(idx, 0, t);
-  save();
-  render();
+function highlight(list) {
+  const section = list ? list.closest('.cat') : null;
+  document.querySelectorAll('.cat.drop-target').forEach((s) => { if (s !== section) s.classList.remove('drop-target'); });
+  if (section) section.classList.add('drop-target');
+}
+
+// Après un dépôt, l'ordre affiché devient l'ordre enregistré.
+function applyDomOrder(evt, before) {
+  const placed = [];
+  document.querySelectorAll('#board .cat').forEach((section) => {
+    section.querySelectorAll(':scope > .task').forEach((row) => placed.push({ id: row.dataset.id, cat: section.dataset.cat }));
+  });
+  const byId = new Map(state.tasks.map((t) => [t.id, t]));
+  const open = [];
+  for (const p of placed) {
+    const t = byId.get(p.id);
+    if (t && !t.done) {
+      open.push(t);
+      byId.delete(p.id);
+    }
+  }
+  // Sécurité : toute tâche à faire qui ne serait plus affichée est gardée telle quelle.
+  const rest = [...byId.values()];
+  const movedTask = findTask(evt.item.dataset.id);
+  const oldCat = movedTask ? movedTask.cat : null;
+  const newCat = evt.to && evt.to.dataset ? evt.to.dataset.cat : oldCat;
+
+  const prevKey = state.tasks.filter((t) => !t.done).map((t) => t.id + ':' + t.cat).join();
+  for (const p of placed) { const t = findTask(p.id); if (t) t.cat = p.cat; }
+  state.tasks = open.concat(rest);
+  const nextKey = state.tasks.filter((t) => !t.done).map((t) => t.id + ':' + t.cat).join();
+
+  if (prevKey === nextKey) {
+    render();
+    return;
+  }
+  if (oldCat !== newCat && newCat) {
+    const c = CATS.find((x) => x.id === newCat);
+    commit({ toast: `Déplacée dans « ${c.label} »`, before });
+  } else {
+    commit();
+  }
 }
 
 // ---------- Affichage ----------
@@ -182,15 +322,9 @@ function selectCat(id) {
   renderPicker();
 }
 
-function taskRow(t, { done = false } = {}) {
+function taskRow(t, { done = false, tag = 'li' } = {}) {
   const catIdx = CAT_IDS.indexOf(t.cat);
-  const li = el('li', {
-    class: `task t-${t.cat}`,
-    'data-id': t.id,
-    // Glisser « souris » seulement sur PC. Sur téléphone, Chrome et Safari le lancent tout seuls
-    // après un appui long, ce qui annulait notre glisser au doigt (la tâche retombait sans lâcher).
-    draggable: done || IS_TOUCH ? false : 'true',
-  });
+  const li = el(tag, { class: `task t-${t.cat}`, 'data-id': t.id, role: tag === 'li' ? null : 'listitem' });
 
   li.append(el('button', {
     type: 'button',
@@ -202,13 +336,12 @@ function taskRow(t, { done = false } = {}) {
 
   const title = el('span', { class: 'title' }, t.title);
   if (!done) {
-    if (IS_TOUCH) {
-      // Sur téléphone : un appui sur le texte suffit pour le modifier.
-      title.addEventListener('click', () => startEdit(li, t));
-    } else {
-      title.title = 'Double-clic pour modifier, glisser pour déplacer';
-      title.addEventListener('dblclick', () => startEdit(li, t));
-    }
+    // Au doigt : un appui suffit pour modifier. À la souris : double-clic.
+    title.addEventListener('click', () => {
+      if (lastPointerType !== 'mouse' && !isDragging) startEdit(li, t);
+    });
+    title.addEventListener('dblclick', () => startEdit(li, t));
+    if (!IS_TOUCH) title.title = 'Double-clic pour modifier, glisser pour déplacer';
   }
   li.append(title);
 
@@ -237,314 +370,97 @@ function taskRow(t, { done = false } = {}) {
     onclick: () => deleteTask(t.id),
   }));
   li.append(actions);
-
-  if (!done) {
-    setupTouchDrag(li, t);
-    li.addEventListener('dragstart', (e) => {
-      // Si un glisser au doigt est en cours, on refuse le glisser natif du navigateur.
-      if (touchDrag) { e.preventDefault(); return; }
-      dragId = t.id;
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', t.id);
-      requestAnimationFrame(() => li.classList.add('dragging'));
-    });
-    li.addEventListener('dragend', () => {
-      dragId = null;
-      document.querySelectorAll('.dragging, .drop-before, .drop-target')
-        .forEach((n) => n.classList.remove('dragging', 'drop-before', 'drop-target'));
-    });
-  }
   return li;
 }
 
 function startEdit(li, t) {
+  if (li.querySelector('.edit')) return;
   const title = li.querySelector('.title');
-  const input = el('input', { class: 'edit', type: 'text', maxlength: '200', 'aria-label': 'Modifier la tâche' });
+  const input = el('input', { class: 'edit', type: 'text', maxlength: '200', 'aria-label': 'Modifier la tâche', enterkeyhint: 'done' });
   input.value = t.title;
   let finished = false;
-  const finish = (commit) => {
+  // On ne redessine que la ligne modifiée (et pas toute la liste) : un clic sur un autre bouton
+  // pendant la modification n'est donc pas perdu.
+  const finish = (commitIt) => {
     if (finished) return;
     finished = true;
-    if (commit) renameTask(t.id, input.value);
-    else render();
+    const value = input.value.trim();
+    if (commitIt && value && value !== t.title) {
+      t.title = value;
+      saveState();
+      hideToast();
+    }
+    if (li.isConnected) li.replaceWith(taskRow(t, { tag: li.tagName.toLowerCase() }));
+    sortables.forEach((s) => s.option('disabled', false));
   };
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') finish(true);
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
     if (e.key === 'Escape') finish(false);
   });
   input.addEventListener('blur', () => finish(true));
-  li.draggable = false;
+  // Pendant la modification, on ne peut pas déplacer de tâche (sinon le texte serait perdu).
+  sortables.forEach((s) => s.option('disabled', true));
   title.replaceWith(input);
   input.focus();
   input.select();
 }
 
-function setupDrop(section, catId) {
-  section.addEventListener('dragover', (e) => {
-    if (!dragId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    document.querySelectorAll('.drop-target').forEach((n) => n !== section && n.classList.remove('drop-target'));
-    section.classList.add('drop-target');
-    document.querySelectorAll('.drop-before').forEach((n) => n.classList.remove('drop-before'));
-    const target = rowUnder(section, e.clientY);
-    if (target) target.classList.add('drop-before');
-  });
-  section.addEventListener('dragleave', (e) => {
-    if (!section.contains(e.relatedTarget)) {
-      section.classList.remove('drop-target');
-      section.querySelectorAll('.drop-before').forEach((n) => n.classList.remove('drop-before'));
-    }
-  });
-  section.addEventListener('drop', (e) => {
-    e.preventDefault();
-    if (!dragId) return;
-    const target = rowUnder(section, e.clientY);
-    moveTask(dragId, catId, target ? target.dataset.id : null);
-  });
-}
-
-// ---------- Déplacer au doigt : appui long, on glisse, on lâche ----------
-
-const LONG_PRESS_MS = 350;
-const MOVE_TOLERANCE = 10; // px : au-delà, c'est un défilement, pas un appui long
-const EDGE = 90;           // px : zone en haut/bas de l'écran qui fait défiler pendant le glisser
-let touchDrag = null;
-let suppressClickUntil = 0;
-
-function setupTouchDrag(li, t) {
-  li.addEventListener('touchstart', (e) => {
-    if (e.touches.length !== 1 || e.target.closest('button, input')) return;
-    const p = e.touches[0];
-    cancelTouchDrag();
-    touchDrag = {
-      id: t.id, li, active: false,
-      startX: p.clientX, startY: p.clientY, x: p.clientX, y: p.clientY,
-    };
-    li.classList.add('pressing');
-    touchDrag.timer = setTimeout(beginTouchDrag, LONG_PRESS_MS);
-  }, { passive: true });
-
-  li.addEventListener('touchmove', (e) => {
-    if (!touchDrag || touchDrag.li !== li) return;
-    const p = e.touches[0];
-    touchDrag.x = p.clientX;
-    touchDrag.y = p.clientY;
-    if (!touchDrag.active) {
-      if (Math.hypot(p.clientX - touchDrag.startX, p.clientY - touchDrag.startY) > MOVE_TOLERANCE) cancelTouchDrag();
-      return;
-    }
-    if (e.cancelable) e.preventDefault(); // bloque le défilement pendant qu'on glisse
-    // Rien d'autre ici : tout le travail est fait une seule fois par image, dans dragFrame().
-  }, { passive: false });
-
-  li.addEventListener('touchend', (e) => {
-    if (!touchDrag || touchDrag.li !== li) return;
-    if (touchDrag.active) {
-      e.preventDefault();
-      dropTouchDrag();
-    } else {
-      cancelTouchDrag();
-    }
-  }, { passive: false });
-
-  li.addEventListener('touchcancel', cancelTouchDrag);
-  // Empêche le menu « copier / partager » de l'appui long.
-  li.addEventListener('contextmenu', (e) => { if (touchDrag || IS_TOUCH) e.preventDefault(); });
-}
-
-function beginTouchDrag() {
-  const d = touchDrag;
-  if (!d) return;
-  d.active = true;
-  try { if (navigator.vibrate) navigator.vibrate(20); } catch {}
-
-  // On mesure tout UNE fois, au moment où on prend la tâche (en coordonnées de page).
-  // Pendant le glisser, rien ne bouge dans la mise en page : seule la copie flottante bouge.
-  const sy = window.scrollY;
-  const r = d.li.getBoundingClientRect();
-  d.offsetX = d.x - r.left;
-  d.offsetY = d.y - r.top;
-  d.sections = [...document.querySelectorAll('.cat')].map((s) => {
-    const sr = s.getBoundingClientRect();
-    return {
-      el: s,
-      cat: s.dataset.cat,
-      top: sr.top + sy,
-      bottom: sr.bottom + sy,
-      rows: [...s.querySelectorAll('.task')]
-        .filter((row) => row !== d.li)
-        .map((row) => {
-          const rr = row.getBoundingClientRect();
-          return { el: row, id: row.dataset.id, mid: rr.top + sy + rr.height / 2 };
-        }),
-    };
-  });
-  d.maxScroll = document.documentElement.scrollHeight - window.innerHeight;
-
-  // Copie flottante : déplacée uniquement avec transform (géré par la carte graphique).
-  const ghost = d.li.cloneNode(true);
-  ghost.classList.remove('pressing');
-  ghost.classList.add('ghost');
-  ghost.removeAttribute('data-id');
-  ghost.style.width = r.width + 'px';
-  ghost.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
-  d.ghost = ghost;
-  document.body.append(ghost);
-
-  d.li.classList.remove('pressing');
-  d.li.classList.add('dragging');
-  document.body.classList.add('touch-dragging');
-  d.section = null;
-  d.row = null;
-  d.raf = requestAnimationFrame(dragFrame);
-}
-
-// Une seule passe par image : défilement auto, position de la copie, cible survolée.
-function dragFrame() {
-  const d = touchDrag;
-  if (!d || !d.active) return;
-
-  let dy = 0;
-  if (d.y < EDGE) dy = -Math.ceil((EDGE - d.y) / 5);
-  else if (d.y > window.innerHeight - EDGE) dy = Math.ceil((d.y - (window.innerHeight - EDGE)) / 5);
-  if (dy) {
-    const next = Math.max(0, Math.min(d.maxScroll, window.scrollY + dy));
-    if (next !== window.scrollY) window.scrollTo(0, next);
-  }
-
-  d.ghost.style.transform = `translate3d(${d.x - d.offsetX}px, ${d.y - d.offsetY}px, 0)`;
-  updateTouchTarget();
-  d.raf = requestAnimationFrame(dragFrame);
-}
-
-function updateTouchTarget() {
-  const d = touchDrag;
-  const y = d.y + window.scrollY;
-  const list = d.sections;
-
-  // Catégorie sous le doigt. Entre deux catégories, on garde la précédente (pas de clignotement).
-  let section = d.section;
-  if (y < list[0].top - 40 || y > list[list.length - 1].bottom + 40) section = null;
-  else {
-    const hit = list.find((s) => y >= s.top && y <= s.bottom);
-    if (hit) section = hit;
-    else if (!section) section = list.reduce((a, b) => (Math.abs(y - (a.top + a.bottom) / 2) < Math.abs(y - (b.top + b.bottom) / 2) ? a : b));
-  }
-  const row = section ? section.rows.find((rw) => y < rw.mid) || null : null;
-
-  // On ne touche au DOM que si quelque chose a changé.
-  if (section !== d.section) {
-    if (d.section) d.section.el.classList.remove('drop-target');
-    if (section) section.el.classList.add('drop-target');
-    if (section && d.section) try { if (navigator.vibrate) navigator.vibrate(8); } catch {}
-    d.section = section;
-  }
-  if (row !== d.row) {
-    if (d.row) d.row.el.classList.remove('drop-before');
-    if (row) row.el.classList.add('drop-before');
-    d.row = row;
-  }
-  d.targetCat = section ? section.cat : null;
-  d.beforeId = row ? row.id : null;
-}
-
-function clearDropMarks() {
-  document.querySelectorAll('.drop-before, .drop-target').forEach((n) => n.classList.remove('drop-before', 'drop-target'));
-}
-
-function dropTouchDrag() {
-  const d = touchDrag;
-  const { id, targetCat, beforeId } = d;
-  cancelTouchDrag();
-  suppressClickUntil = Date.now() + 500;
-  if (!targetCat) return;
-  const t = findTask(id);
-  const moved = t && t.cat !== targetCat;
-  const before = snapshot();
-  moveTask(id, targetCat, beforeId);
-  if (moved) {
-    const c = CATS.find((x) => x.id === targetCat);
-    showToast(`Déplacée dans « ${c.label} »`, before);
-  }
-}
-
-function cancelTouchDrag() {
-  const d = touchDrag;
-  if (!d) return;
-  clearTimeout(d.timer);
-  cancelAnimationFrame(d.raf);
-  if (d.ghost) d.ghost.remove();
-  d.li.classList.remove('pressing', 'dragging');
-  document.body.classList.remove('touch-dragging');
-  clearDropMarks();
-  touchDrag = null;
-}
-
-// Pendant un glisser au doigt : pas de menu d'appui long, pas de glisser natif, pas de sélection.
-for (const type of ['contextmenu', 'dragstart', 'selectstart']) {
-  document.addEventListener(type, (e) => { if (touchDrag) e.preventDefault(); }, true);
-}
-
-// Après un glisser, on ignore le « clic » que le navigateur envoie en lâchant.
-document.addEventListener('click', (e) => {
-  if (Date.now() < suppressClickUntil) {
-    e.stopPropagation();
-    e.preventDefault();
-  }
-}, true);
-
-// La ligne devant laquelle on dépose : la première dont le milieu est sous le curseur.
-function rowUnder(section, y) {
-  for (const row of section.querySelectorAll('.task:not(.dragging)')) {
-    const r = row.getBoundingClientRect();
-    if (y < r.top + r.height / 2) return row;
-  }
-  return null;
+function flushRender() {
+  if (pendingRender) { pendingRender = false; render(); }
 }
 
 function render() {
-  const board = $('#board');
-  board.innerHTML = '';
-  const open = state.tasks.filter((t) => !t.done);
+  // Jamais pendant un glisser : on détruirait la tâche tenue et l'appli resterait bloquée.
+  if (holding || isDragging) { pendingRender = true; return; }
+  // Garde-fou : un « blur » du champ de modification pendant le redessin ne doit pas redessiner deux fois.
+  if (rendering) return;
+  rendering = true;
+  try {
+    sortables.forEach((s) => s.destroy());
+    sortables = [];
+    const board = $('#board');
+    board.innerHTML = '';
+    const open = state.tasks.filter((t) => !t.done);
 
-  for (const c of CATS) {
-    const tasks = open.filter((t) => t.cat === c.id);
-    const section = el('section', { class: `cat cat-${c.id}`, 'data-cat': c.id, 'aria-labelledby': `h-${c.id}` });
-    const h2 = el('h2', { id: `h-${c.id}` });
-    if (c.id === 'immediate') h2.insertAdjacentHTML('beforeend', ICONS.bolt);
-    h2.append(c.label);
-    section.append(el('div', { class: 'cat-head' },
-      h2,
-      el('span', { class: 'cat-hint' }, c.hint),
-      el('span', { class: `count${tasks.length ? ' has' : ''}`, 'aria-label': `${tasks.length} tâche(s)` }, String(tasks.length)),
-    ));
-    const ul = el('ul', { class: 'list' });
-    if (tasks.length) tasks.forEach((t) => ul.append(taskRow(t)));
-    else ul.append(el('li', { class: 'empty' }, c.id === 'immediate' ? 'Rien d’urgent. Respire.' : 'Rien ici.'));
-    section.append(ul);
-    setupDrop(section, c.id);
-    board.append(section);
+    for (const c of CATS) {
+      const tasks = open.filter((t) => t.cat === c.id);
+      // Toute la carte (en-tête compris) est la zone de dépôt : les tâches en sont les enfants directs.
+      const section = el('section', { class: `cat cat-${c.id}`, 'data-cat': c.id, role: 'list', 'aria-labelledby': `h-${c.id}` });
+      const h2 = el('h2', { id: `h-${c.id}` });
+      if (c.id === 'immediate') h2.insertAdjacentHTML('beforeend', ICONS.bolt);
+      h2.append(c.label);
+      section.append(el('div', { class: 'cat-head', role: 'presentation' },
+        h2,
+        el('span', { class: 'cat-hint' }, c.hint),
+        el('span', { class: `count${tasks.length ? ' has' : ''}`, 'aria-label': `${tasks.length} tâche(s)` }, String(tasks.length)),
+      ));
+      tasks.forEach((t) => section.append(taskRow(t, { tag: 'div' })));
+      section.append(el('div', { class: 'empty', role: 'presentation' }, c.id === 'immediate' ? 'Rien d’urgent. Respire.' : 'Rien ici.'));
+      board.append(section);
+      if (window.Sortable) sortables.push(setupSortable(section));
+    }
+
+    // Terminées : les plus récentes en premier.
+    const done = state.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+    $('#doneZone').hidden = done.length === 0;
+    $('#doneLabel').textContent = `Terminées (${done.length})`;
+    $('#doneToggle').setAttribute('aria-expanded', String(showDone));
+    const doneList = $('#doneList');
+    doneList.hidden = !showDone;
+    doneList.innerHTML = '';
+    done.forEach((t) => doneList.append(taskRow(t, { done: true })));
+
+    const remaining = $('#remaining');
+    remaining.innerHTML = '';
+    if (open.length === 0) remaining.textContent = 'Tout est fait 🎉';
+    else remaining.append(el('strong', {}, String(open.length)), open.length === 1 ? ' tâche à faire' : ' tâches à faire');
+  } finally {
+    rendering = false;
   }
-
-  // Terminées : les plus récentes en premier.
-  const done = state.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
-  $('#doneZone').hidden = done.length === 0;
-  $('#doneLabel').textContent = `Terminées (${done.length})`;
-  $('#doneToggle').setAttribute('aria-expanded', String(showDone));
-  const doneList = $('#doneList');
-  doneList.hidden = !showDone;
-  doneList.innerHTML = '';
-  done.forEach((t) => doneList.append(taskRow(t, { done: true })));
-
-  const remaining = $('#remaining');
-  remaining.innerHTML = '';
-  if (open.length === 0) remaining.textContent = 'Tout est fait 🎉';
-  else remaining.append(el('strong', {}, String(open.length)), open.length === 1 ? ' tâche à faire' : ' tâches à faire');
 }
 
 function focusTask(id) {
-  const btn = document.querySelector(`.task[data-id="${CSS.escape(id)}"] .check`);
+  const btn = document.querySelector(`#board .task[data-id="${CSS.escape(id)}"] .check`);
   if (btn) btn.focus();
 }
 
@@ -560,16 +476,15 @@ function showToast(text, before) {
 }
 
 function hideToast() {
+  clearTimeout(toastTimer);
   $('#toast').hidden = true;
   undoSnapshot = null;
 }
 
 function undo() {
-  if (!undoSnapshot) return;
+  if (!undoSnapshot || holding || isDragging) return;
   state.tasks = undoSnapshot;
-  save();
-  render();
-  hideToast();
+  commit();
 }
 
 // ---------- Démarrage ----------
@@ -585,9 +500,17 @@ function normalize(data) {
 async function init() {
   $('#today').textContent = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
 
-  state = normalize(await storage.load());
+  let data = null;
+  try { data = await storage.load(); } catch { data = null; loadFailed = true; }
+  state = normalize(data);
   renderPicker();
   render();
+  if (loadFailed) {
+    // Rien n'est perdu, mais tant qu'on n'a pas pu lire, on ne laisse rien ajouter (ce serait perdu).
+    showBanner('load', 'Impossible de lire tes tâches pour l’instant. Ferme puis rouvre l’appli : rien n’a été effacé.');
+    $('#newTask').disabled = true;
+    $('.add-btn').disabled = true;
+  }
 
   $('#addForm').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -598,6 +521,52 @@ async function init() {
   $('#doneToggle').addEventListener('click', () => { showDone = !showDone; render(); });
   $('#clearDone').addEventListener('click', clearDone);
   $('#toastUndo').addEventListener('click', undo);
+
+  // Doigt, stylet ou souris : retenu à chaque geste (utile pour les tablettes avec clavier/souris).
+  document.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType || 'mouse'; }, true);
+
+  // Tâche prise : la page ne doit pas défiler sous le doigt, même avant le premier vrai mouvement.
+  // Sinon le navigateur prend la main (pointercancel) et la tâche retombe. SortableJS ne bloque
+  // le défilement qu'une fois le glisser commencé : on couvre aussi le moment juste après l'appui long.
+  document.addEventListener('touchmove', (e) => {
+    if ((holding || isDragging) && e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  // Un deuxième doigt qui touche puis se lève ne doit pas lâcher la tâche tenue par le premier.
+  // Après un appui au doigt, Safari (iPhone/iPad) envoie aussi un faux « mousedown » de compatibilité.
+  // SortableJS le prendrait pour une souris et « prendrait » la tâche sans appui long : on le lui cache.
+  // (Ça n'empêche ni le clic ni le focus : seule la propagation du mousedown est arrêtée.)
+  let lastTouchTime = 0;
+  for (const type of ['touchstart', 'touchend']) {
+    window.addEventListener(type, () => { lastTouchTime = Date.now(); }, true);
+  }
+  window.addEventListener('mousedown', (e) => {
+    if (Date.now() - lastTouchTime < 800) e.stopPropagation();
+  }, true);
+
+  // Un autre doigt posé pendant qu'on tient une tâche est ignoré (ni prise, ni déplacement, ni lâcher).
+  // SortableJS écoute pointer* et touch* : on filtre les deux.
+  for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+    window.addEventListener(type, (e) => {
+      if ((holding || isDragging) && !e.isPrimary) e.stopPropagation();
+    }, true);
+  }
+  window.addEventListener('touchend', (e) => {
+    if ((holding || isDragging) && e.touches.length > 0) e.stopPropagation();
+  }, true);
+
+  // Pas de menu « copier / partager » de l'appui long sur les tâches (mais oui dans le champ de texte).
+  document.addEventListener('contextmenu', (e) => {
+    if (isDragging || (e.target.closest('#board .task') && !e.target.closest('input'))) e.preventDefault();
+  });
+
+  // Juste après un glisser, on ignore le « clic » que le navigateur envoie en lâchant.
+  document.addEventListener('click', (e) => {
+    if (Date.now() < suppressClickUntil && e.target.closest('#board')) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
 
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
