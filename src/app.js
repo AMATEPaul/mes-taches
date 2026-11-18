@@ -331,8 +331,7 @@ function setupTouchDrag(li, t) {
       return;
     }
     if (e.cancelable) e.preventDefault(); // bloque le défilement pendant qu'on glisse
-    moveGhost();
-    updateTouchTarget();
+    // Rien d'autre ici : tout le travail est fait une seule fois par image, dans dragFrame().
   }, { passive: false });
 
   li.addEventListener('touchend', (e) => {
@@ -354,62 +353,100 @@ function beginTouchDrag() {
   const d = touchDrag;
   if (!d) return;
   d.active = true;
-  if (navigator.vibrate) navigator.vibrate(25);
+  try { if (navigator.vibrate) navigator.vibrate(20); } catch {}
+
+  // On mesure tout UNE fois, au moment où on prend la tâche (en coordonnées de page).
+  // Pendant le glisser, rien ne bouge dans la mise en page : seule la copie flottante bouge.
+  const sy = window.scrollY;
   const r = d.li.getBoundingClientRect();
+  d.offsetX = d.x - r.left;
   d.offsetY = d.y - r.top;
-  d.ghost = d.li.cloneNode(true);
-  d.ghost.classList.remove('pressing');
-  d.ghost.classList.add('ghost');
-  d.ghost.style.width = r.width + 'px';
-  d.ghost.style.left = r.left + 'px';
-  document.body.append(d.ghost);
+  d.sections = [...document.querySelectorAll('.cat')].map((s) => {
+    const sr = s.getBoundingClientRect();
+    return {
+      el: s,
+      cat: s.dataset.cat,
+      top: sr.top + sy,
+      bottom: sr.bottom + sy,
+      rows: [...s.querySelectorAll('.task')]
+        .filter((row) => row !== d.li)
+        .map((row) => {
+          const rr = row.getBoundingClientRect();
+          return { el: row, id: row.dataset.id, mid: rr.top + sy + rr.height / 2 };
+        }),
+    };
+  });
+  d.maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+
+  // Copie flottante : déplacée uniquement avec transform (géré par la carte graphique).
+  const ghost = d.li.cloneNode(true);
+  ghost.classList.remove('pressing');
+  ghost.classList.add('ghost');
+  ghost.removeAttribute('data-id');
+  ghost.style.width = r.width + 'px';
+  ghost.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
+  d.ghost = ghost;
+  document.body.append(ghost);
+
   d.li.classList.remove('pressing');
   d.li.classList.add('dragging');
   document.body.classList.add('touch-dragging');
-  moveGhost();
-  updateTouchTarget();
-  autoScroll();
+  d.section = null;
+  d.row = null;
+  d.raf = requestAnimationFrame(dragFrame);
 }
 
-function moveGhost() {
+// Une seule passe par image : défilement auto, position de la copie, cible survolée.
+function dragFrame() {
   const d = touchDrag;
-  if (d && d.ghost) d.ghost.style.top = (d.y - d.offsetY) + 'px';
-}
+  if (!d || !d.active) return;
 
-function clearDropMarks() {
-  document.querySelectorAll('.drop-before, .drop-target').forEach((n) => n.classList.remove('drop-before', 'drop-target'));
+  let dy = 0;
+  if (d.y < EDGE) dy = -Math.ceil((EDGE - d.y) / 5);
+  else if (d.y > window.innerHeight - EDGE) dy = Math.ceil((d.y - (window.innerHeight - EDGE)) / 5);
+  if (dy) {
+    const next = Math.max(0, Math.min(d.maxScroll, window.scrollY + dy));
+    if (next !== window.scrollY) window.scrollTo(0, next);
+  }
+
+  d.ghost.style.transform = `translate3d(${d.x - d.offsetX}px, ${d.y - d.offsetY}px, 0)`;
+  updateTouchTarget();
+  d.raf = requestAnimationFrame(dragFrame);
 }
 
 function updateTouchTarget() {
   const d = touchDrag;
-  if (!d || !d.active) return;
-  const under = document.elementFromPoint(d.x, d.y);
-  const section = under && under.closest('.cat');
-  clearDropMarks();
-  d.targetCat = null;
-  d.beforeId = null;
-  if (!section) return;
-  section.classList.add('drop-target');
-  d.targetCat = section.dataset.cat;
-  const row = rowUnder(section, d.y);
-  if (row) {
-    row.classList.add('drop-before');
-    d.beforeId = row.dataset.id;
+  const y = d.y + window.scrollY;
+  const list = d.sections;
+
+  // Catégorie sous le doigt. Entre deux catégories, on garde la précédente (pas de clignotement).
+  let section = d.section;
+  if (y < list[0].top - 40 || y > list[list.length - 1].bottom + 40) section = null;
+  else {
+    const hit = list.find((s) => y >= s.top && y <= s.bottom);
+    if (hit) section = hit;
+    else if (!section) section = list.reduce((a, b) => (Math.abs(y - (a.top + a.bottom) / 2) < Math.abs(y - (b.top + b.bottom) / 2) ? a : b));
   }
+  const row = section ? section.rows.find((rw) => y < rw.mid) || null : null;
+
+  // On ne touche au DOM que si quelque chose a changé.
+  if (section !== d.section) {
+    if (d.section) d.section.el.classList.remove('drop-target');
+    if (section) section.el.classList.add('drop-target');
+    if (section && d.section) try { if (navigator.vibrate) navigator.vibrate(8); } catch {}
+    d.section = section;
+  }
+  if (row !== d.row) {
+    if (d.row) d.row.el.classList.remove('drop-before');
+    if (row) row.el.classList.add('drop-before');
+    d.row = row;
+  }
+  d.targetCat = section ? section.cat : null;
+  d.beforeId = row ? row.id : null;
 }
 
-// Fait défiler la page quand le doigt approche du haut ou du bas de l'écran.
-function autoScroll() {
-  const d = touchDrag;
-  if (!d || !d.active) return;
-  let dy = 0;
-  if (d.y < EDGE) dy = -Math.ceil((EDGE - d.y) / 6);
-  else if (d.y > window.innerHeight - EDGE) dy = Math.ceil((d.y - (window.innerHeight - EDGE)) / 6);
-  if (dy) {
-    window.scrollBy(0, dy);
-    updateTouchTarget();
-  }
-  d.raf = requestAnimationFrame(autoScroll);
+function clearDropMarks() {
+  document.querySelectorAll('.drop-before, .drop-target').forEach((n) => n.classList.remove('drop-before', 'drop-target'));
 }
 
 function dropTouchDrag() {
