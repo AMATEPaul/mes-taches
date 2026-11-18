@@ -187,7 +187,9 @@ function taskRow(t, { done = false } = {}) {
   const li = el('li', {
     class: `task t-${t.cat}`,
     'data-id': t.id,
-    draggable: done ? false : 'true',
+    // Glisser « souris » seulement sur PC. Sur téléphone, Chrome et Safari le lancent tout seuls
+    // après un appui long, ce qui annulait notre glisser au doigt (la tâche retombait sans lâcher).
+    draggable: done || IS_TOUCH ? false : 'true',
   });
 
   li.append(el('button', {
@@ -239,6 +241,8 @@ function taskRow(t, { done = false } = {}) {
   if (!done) {
     setupTouchDrag(li, t);
     li.addEventListener('dragstart', (e) => {
+      // Si un glisser au doigt est en cours, on refuse le glisser natif du navigateur.
+      if (touchDrag) { e.preventDefault(); return; }
       dragId = t.id;
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', t.id);
@@ -475,6 +479,11 @@ function cancelTouchDrag() {
   document.body.classList.remove('touch-dragging');
   clearDropMarks();
   touchDrag = null;
+}
+
+// Pendant un glisser au doigt : pas de menu d'appui long, pas de glisser natif, pas de sélection.
+for (const type of ['contextmenu', 'dragstart', 'selectstart']) {
+  document.addEventListener(type, (e) => { if (touchDrag) e.preventDefault(); }, true);
 }
 
 // Après un glisser, on ignore le « clic » que le navigateur envoie en lâchant.

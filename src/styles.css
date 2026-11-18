@@ -336,6 +336,7 @@ kbd {
   .icon-btn { width: 38px; height: 38px; }
   .task:hover { background: transparent; }
   .title { cursor: text; }
+  .task, .task * { -webkit-user-drag: none; }
   .shortcuts.keys { display: none; }
   .shortcuts.touch-hint { display: block; }
   .add input, .edit { font-size: 16px; } /* évite le zoom automatique sur iPhone */
