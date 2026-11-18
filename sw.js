@@ -1,5 +1,5 @@
 // Service worker : garde l'appli en cache pour qu'elle marche sans connexion.
-const CACHE = 'mes-taches-v3';
+const CACHE = 'mes-taches-v4';
 const FILES = [
   './',
   'index.html',
