@@ -317,6 +317,51 @@ kbd {
   background: var(--surface);
 }
 
+/* ---------- Sauvegarde ---------- */
+.backup-row { margin-top: 18px; text-align: center; }
+.backup-row .link-btn { text-decoration: underline; text-underline-offset: 3px; padding: 10px 8px; }
+.backup-row .link-btn:hover { color: var(--text); }
+
+.sheet {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .3);
+}
+.sheet::backdrop { background: rgba(0, 0, 0, .45); }
+.sheet h2 { margin: 0 0 6px; font-size: 20px; }
+.sheet-text { margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+.sheet-label { display: block; margin: 20px 0 6px; font-weight: 600; font-size: 14px; }
+.sheet textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 10px 12px;
+  font: 16px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.sheet textarea:focus { outline: none; border-color: var(--focus); }
+.sheet-msg { min-height: 1.4em; margin: 8px 0 0; font-size: 14px; color: var(--c-cava); }
+.sheet-msg.error { color: var(--c-immediate); }
+.sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.primary-btn, .ghost-btn {
+  min-height: 44px;
+  border-radius: 8px;
+  padding: 0 16px;
+  font-weight: 600;
+}
+.primary-btn { border: 0; background: var(--text); color: var(--bg); }
+.sheet > .primary-btn { width: 100%; }
+.ghost-btn { border: 1px solid var(--border); background: transparent; color: var(--text); }
+
 /* ---------- Toast ---------- */
 .toast {
   position: fixed;
